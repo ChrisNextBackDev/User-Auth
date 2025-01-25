@@ -7,7 +7,7 @@ const app = express();
 
 app.use(express.json());
 
-const port = process.env.PORT || 5000;
+const port = process.env.PORT || 3050;
 
 const UserRouter = require('./api/User');
 // for accepting post form data

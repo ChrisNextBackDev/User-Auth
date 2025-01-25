@@ -3,7 +3,7 @@ const express = require('express');
 const router= express.Router();
 
 //mongo db user model
-const User = require('../models/User')
+const UserQuiz = require('../models/User')
 
 //email verification handler
 const nodemailer = require('nodemailer');
@@ -84,7 +84,7 @@ router.post('/signup', (req, res) => {
     }else {
         //signup process
         //first check whether the user already exists
-        User.find({email}).then(result =>{
+        UserQuiz.find({email}).then(result =>{
             if(result.length > 0){
                 res.json({
                    message: 'User already exist' 
@@ -94,14 +94,16 @@ router.post('/signup', (req, res) => {
                //first hash the password
                const salt = 5;
                bcrypt.hash(password,salt).then(hashedPassword =>{
+                console.log('i am okay here');
                 //create a new user using the user model
-                const newUser = new User({
+                const newUser = new UserQuiz({
                     name,
                     email,
                     password: hashedPassword,
                     dateOfBirth,
                     verified:false,
                 });
+                console.log('i am okay here too');
                 newUser.save().then(result =>{
 
                     // handling verification
@@ -142,7 +144,7 @@ const sendVerificationEmail = ({_id, email}, res) => {
     //the above _id is the id from our mongodb database
     //using localhost to be the url for sending to the email
 
-    const currentUrl = 'http://localhost:5000/';
+    const currentUrl = 'http://localhost:3050/';
     const uniqueString = uuidv4() + _id;
     //setting the mail options for nodemailer
 
@@ -155,7 +157,7 @@ const sendVerificationEmail = ({_id, email}, res) => {
         subject: 'Verify your email',
         //add html property
         html: `<p>Verify your email address to complete your sign up and login to your account</p>
-        <p>This link expires in <b> 6 hours.</b></p><p> Click here <a href = ${currentUrl + "user/verify/" + _id + "/" + uniqueString}></a> to proceed</p>`
+        <p>This link expires in <b> 6 hours.</b></p><p> Click here <a href="${currentUrl + 'user/verify/' + _id + '/' + uniqueString}">${currentUrl + 'user/verify/' + _id + '/' + uniqueString}</a> </p>`
     }
     //we need to hash the unique string and store it in the user verification model before sending verification link
     const salt = 10;
@@ -163,7 +165,7 @@ const sendVerificationEmail = ({_id, email}, res) => {
     .hash(uniqueString, salt)
     .then((hashedUniqueString)=>{
         //create new verification model user
-        const newVerification = newVerification({
+        const newVerification = new UserVerification({
             userId: _id,
             uniqueString:hashedUniqueString,
             createdAt: Date.now(),
@@ -184,7 +186,7 @@ const sendVerificationEmail = ({_id, email}, res) => {
                 console.log(error);
                 res.status(400);
                 res.json({
-                message: 'Error occured while sending mail'
+                message: 'Error occured while sending verification mail'
         })
             })
         })
@@ -210,12 +212,95 @@ router.get("/verify/:userId/:uniqueString", (req, res) =>{
     // fetch the id and the unique string that you passed during email verification link
     let {userId, uniqueString} = req.params;
     //chech wether the userverification exist using the id
-    UserVerification.find({userId}
+    UserVerification.find({userId})
         .then((result)=>{
             if(result.length>0){
                 //user verification properties exist, we can proceed
+                //check whether the user record has expired
+
+                const {expiresAt} = result[0];
+                const hashedUniqueString = result[0].uniqueString;// for comparison
+
+                if(expiresAt < Date.now()){
+                    // so once it has expired, we will go ahead and delete it from the user verification model
+                    UserVerification
+                    .deleteOne({userId})
+                    .then((result) => {
+                        //why are we actually deleting the user withexpired unique string? Because, it has expired and was not clicked
+                        UserQuiz.deleteOne({_id: userId})
+                        .then(()=>{
+                            res.json({
+                                message: 'Link has expired, signup again'
+                            })
+                        })
+                        .catch((error)=>{
+                            console.log(error);
+                            res.json({
+                                message: 'Error occur while deleting the user'
+                            })
+                        })
+                    })
+                    .catch((error)=>{
+                        console.log(error);
+                        res.json({
+                            message: 'Error occur while deleting the userverification model'
+                        })
+                    })
+                }else{
+                    //what happens when the user verification has not expires/ still active
+                    //first compare the unaltered unique string with the one stored in the database(hashed one)
+                    //we are getting the unique string from the link as it is attache there
+                    bcrypt
+                    .compare(uniqueString, hashedUniqueString)
+                    .then(result =>{
+                        if(result){
+                            //string matches
+                            //update the user record and set the verified to true
+                            UserQuiz
+                            .updateOne({_id:userId}, {verified:true})
+                            .then(()=>{
+                                //once updated, we have to delete the userverification model
+                                UserVerification
+                                .deleteOne({userId})
+                                .then(() =>{
+                                    res.json({
+                                        //the user should be taken to the homepage of the application
+                                        message: ' User verified successfully'
+                                    })
+                                })
+                                .catch((error) =>{
+                                    res.json({
+                                        message: 'Error occur while deleting the user model'
+                                    })
+                                })
+                            })
+                            .catch((error) => {
+                                console.log(error);
+                                res.json({
+                                    message: 'Error Occured while updating the user record'
+                                })
+                            })
+                        }else{
+                            //user exist but incorrect parameters
+                            res.json({
+                                message: 'Incorrect parameters'
+                            })
+                        }
+                    })
+                    .catch((error) =>{
+                        res.json({
+                            message: 'error occurs while comparing the unique strings'
+                        })
+                    })
+                }
+
             }else{
                 //user verification model couldn't find such  userid
+                //frontend can do some funny shits here
+                console.log('User Verification Does not Exist');
+                res.json({
+                    message:'User Verification Does not Exist'
+                })
             }
         })
         .catch((error) =>{
@@ -225,9 +310,10 @@ router.get("/verify/:userId/:uniqueString", (req, res) =>{
                 message: 'Error occur while handling verification link'
             })
         })
+    }
     )
 
-})
+
 
 
 
@@ -246,9 +332,15 @@ router.post('/signin', (req, res) =>{
         })
     }else{
         //check if the user already exist
-        User.find({email}).then(data =>{
+        UserQuiz.find({email}).then(data =>{
             if(data.length>0){
-                //compare the input password with the hashed password
+                //check if the user is verified
+                if(!data[0].verified){
+                    res.json({
+                        message: 'Email has not been verified'
+                    })
+                }else{
+                    //compare the input password with the hashed password
                 const hashedPassword = data[0].password;
                 bcrypt.compare(password, hashedPassword).then(result =>{
                     if(result){
@@ -268,9 +360,11 @@ router.post('/signin', (req, res) =>{
                     console.log(err);
                     res.status(400);
                     res.json({
-                        message: 'Error occur while signing in'
+                        message: 'Error occur while signing in/comparing password'
                     })
                 })
+                }
+                
 
             }else{
                 res.status(400);

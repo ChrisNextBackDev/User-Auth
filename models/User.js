@@ -1,7 +1,7 @@
 const mongoose = require('mongoose');
 const Schema = mongoose.Schema;
 
-const UserSchema = new Schema({
+const UserQuizSchema = new Schema({
     name: String,
     email: String,
     password: String,
@@ -9,5 +9,5 @@ const UserSchema = new Schema({
     verified: Boolean   //to check if our user is verified and it is false by default
 });
 
-const User = mongoose.model('User', UserSchema);
-module.exports = User;
+const UserQuiz = mongoose.model('UserQuiz', UserQuizSchema);
+module.exports = UserQuiz;
