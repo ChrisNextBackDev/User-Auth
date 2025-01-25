@@ -18,6 +18,9 @@ require('dotenv').config();
 //mongo db userVerification model
 const UserVerification = require('../models/UserVerification')
 
+//mongo db PasswordReset model
+const PasswordReset = require('../models/PasswordReset')
+
 
 //password handler
 const bcrypt = require('bcrypt');
@@ -207,7 +210,7 @@ const sendVerificationEmail = ({_id, email}, res) => {
 }
 
 
-//route to handle the link that the user will click and it will be a get request
+//route to handle the link that the user will click and it will be a fetch us the userid and unique string for comparison
 router.get("/verify/:userId/:uniqueString", (req, res) =>{
     // fetch the id and the unique string that you passed during email verification link
     let {userId, uniqueString} = req.params;
@@ -381,6 +384,220 @@ router.post('/signin', (req, res) =>{
             })
         })
     }
+});
+
+
+//password reset request route
+
+router.post("/requestPasswordReset", (req, res) => {
+    const {email, redirectUrl} = req.body;
+
+    //first check if the user exist in the user record
+    UserQuiz
+    .find({email})
+    .then((data) =>{
+        if(data.length>0){
+            //there is such user
+            //check first if the user is verified
+            if(!data[0].verified){
+                res.json({
+                    message: 'Check your inbox and verify your email address'
+                })
+            }else{
+                //the user exist and is verified
+                sendResetEmail(data[0], redirectUrl, res);
+            }
+        }else{
+            res.json({
+                message:'No such User exist'
+            })
+        }
+    })
+    .catch((error) =>{
+        res.json({
+            message: 'Error occurs while finding the user in the user record'
+        })
+    })
+});
+
+//send reset password link
+const sendResetEmail = ({_id, email}, redirectUrl, res) =>{
+    //forming the resetstring
+    const resetString = uuidv4() + _id;
+    //console.log(resetString);
+    //delete the existing record of the password reset object from the db before sending another reset link
+    PasswordReset
+    .deleteMany({userId:_id})
+    .then((result) =>{
+        //we can now go ahead and send the reset password link
+        const mailOptions = {
+            from: {
+                address: process.env.AUTH_EMAIL,
+                name: 'Group 3 Lab One Project'
+            },
+            to: email,
+            subject: 'Password reset',
+            //add html property
+            html: `<p>Oops! So Sorry you lost your password. Use the link below to reset it</p>
+            <p>This link expires in <b> 60 minutes.</b></p>
+            <p> Click here <a href="${redirectUrl + '/' + _id + '/' + resetString}">${redirectUrl + '/' + _id + '/' + resetString}</a> </p>`
+        }
+
+        //hash the resetString before saving it to the database
+        const salt = 10;
+        bcrypt
+        .hash(resetString, salt)
+        .then(hashedResetString =>{
+            //console.log(hashedResetString);
+            //save it in password reset model
+            //first, create a new password reset string
+            const newPasswordReset = new PasswordReset({
+                userId : _id,
+                resetString : hashedResetString,
+                createdAt : Date.now(),
+                expiresAt : Date.now() + 3600000
+            });
+            newPasswordReset
+            .save()
+            .then(()=>{
+                //we are now ready to send the reset link
+                transporter.sendMail(mailOptions)
+                .then(()=>{
+                    res.json({
+                        message: 'Reset link sent successfully'
+                    })
+                })
+                .catch((error)=>{
+                    console.log(error);
+                    res.json({
+                        message: 'Error occur while sending reset link'
+                    })
+                })
+            })
+            .catch((error) =>{
+                console.log(error);
+                res.json({
+                    message: 'Error occur while saving to the password reset model'
+                })
+            })
+        })
+        .catch((error) =>{
+            console.log(error);
+            res.json({
+                message: 'Error occur while hashing the reset string'
+            })
+        })
+    })
+    .catch((error) =>{
+        console.log(error);
+        res.json({
+            message: 'Error occured while deleting existing records'
+        })
+    })
+
+}
+
+
+//actual reset password url
+
+router.post("/resetPassword", (req,res)=>{
+    let {userId, resetString, newPassword} = req.body;
+
+    //first check if the string the user is passing actually exists in our collection
+    PasswordReset.find({userId})
+    .then(result=>{
+        if(result.length>0){
+            //we found a user
+            //check for the expiration of the link
+            const {expiresAt} = result[0];
+            const hashedResetString = result[0].resetString;
+
+            if(expiresAt < Date.now()){
+                //it has expired and we need to delete it
+                PasswordReset
+                .deleteOne({userId})
+                .then(()=>{
+                    res.json({
+                        message:'Reset link has expired, try again'
+                    })
+                })
+                .catch((error)=>{
+                    console.log(error);
+                    res.json({
+                        message: 'Error occured while deleting the expired reset link'
+                    })
+                })
+            }else{
+                //link is still active
+                //check if the string the user is passing is the same as that stored in the database
+
+                bcrypt
+                .compare(resetString, hashedResetString)
+                .then((result)=>{
+                    if(result){
+                        //both matched
+                        //go ahead and hash the new password and store it in a database
+                        const salt = 10;
+                        bcrypt
+                        .hash(newPassword, salt)
+                        .then((hashedNewPassword)=>{
+                            UserQuiz
+                            .updateOne({_id:userId}, {password : hashedNewPassword})
+                            .then(()=>{
+                                //update complete, dete the password reset model
+                                PasswordReset
+                                .deleteOne({userId})
+                                .then(()=>{
+                                    res.json({
+                                        message:'Password updated successfully'
+                                    })
+                                })
+                                .catch((error)=>{
+                                    console.log(error);
+                                    res.json({
+                                        message:'Error occur while deleting password reset model'
+                                    })
+                                })
+                            })
+                            .catch((error) =>{
+                                res.json({
+                                    message: 'Error occur while updating password'
+                                })
+                            })
+                        })
+                        .catch((error) =>{
+                            console.log(error);
+                            res.json({
+                                message:'Error occur while hashing new password'
+                            })
+                        })
+                    }else{
+                        res.json({
+                            message:'ResetString and the hashed one are not the same'
+                        })
+                    }
+                })
+                .catch((error)=>{
+                    console.log(error);
+                    res.json({
+                        message:'Error occured while comparing the reset string and the hashed one'
+                    })
+                })
+            }
+        }else{
+            res.json({
+                message:'User with such userId does not exist'
+            })
+        }
+    })
+    .catch((error) =>{
+        console.log(error);
+        res.json({
+            message:'Error Occured while searching for the userid'
+        })
+    })
 })
+
+
 
 module.exports= router;
